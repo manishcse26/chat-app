@@ -1,0 +1,98 @@
+require("dotenv").config();
+
+const express = require("express");
+const cors = require("cors");
+const { createServer } = require("http");
+const { Server } = require("socket.io");
+
+const createMongodbConnection = require("./config/mongodbConnection");
+
+const AuthRoute = require("./routes/authRoute");
+const UserRoute = require("./routes/userRoute");
+const ChatRoute = require("./routes/chatRoute");
+
+const app = express();
+
+app.use(
+  cors({
+    origin: ["http://localhost:5173"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+  })
+);
+
+app.use(express.json({ limit: "50mb" }));
+
+app.use("/api/auth", AuthRoute);
+app.use("/api/users", UserRoute);
+app.use("/api/chats", ChatRoute);
+
+const onlineUsers = [];
+
+const server = createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:5173"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+  },
+});
+
+io.on("connection", (socket) => {
+  console.log("User Connected");
+
+  socket.on("join-room", (userId) => {
+    if (!onlineUsers.includes(userId)) {
+      onlineUsers.push(userId);
+    }
+    io.emit("online", onlineUsers);
+    if (userId) socket.join(userId);
+  });
+
+  socket.on("offline", (id) => {
+    const filteredIds = onlineUsers.filter((userId) => userId != id);
+    io.emit("offline", filteredIds);
+  });
+
+  socket.on("send-message", (data) => {
+    if (data) {
+      const receiverId = data.userIds.find((id) => id !== data.senderId);
+      io.to(receiverId).emit("received-message", data);
+    }
+  });
+
+  socket.on("messages-seen", (data) => {
+    io.to(data.senderId).emit("messages-seen-ack", {
+      seenBy: data.receiverId,
+    });
+  });
+
+  socket.on("call-user", (data) => {
+    io.to(data.to).emit("incoming-call", data);
+  });
+
+  socket.on("call-accepted", (data) => {
+    io.to(data.to).emit("call-accepted", data);
+  });
+
+  socket.on("call-rejected", () => {
+    io.emit("call-rejected");
+  });
+
+  socket.on("call-ended", (data) => {
+    io.to(data.to).emit("call-ended");
+  });
+
+  socket.on("ice-candidate", (data) => {
+    io.to(data.to).emit("ice-candidate", data);
+  });
+});
+
+const PORT = process.env.PORT || 5000;
+
+createMongodbConnection()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`🚀 Server Started on ${PORT}`);
+    });
+  })
+  .catch((err) => console.log(err));
